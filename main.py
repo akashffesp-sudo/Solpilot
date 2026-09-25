@@ -139,11 +139,11 @@ async def handle_logic(update, data_input):
 
     # FIXED MINIMUM 0.5 SOL
     elif data=='deposit_sol':
-        await send(f"🟣 **DEPOSIT SOLANA**\n\n💰 Balance: 0.00 SOL\n\nSolana Address:\n`{SOL_DEPOSIT}`\n\n**Min: 0.5 SOL**\nSend only SOL / USDT (Solana)\nTap to copy!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔵 Deposit ETH instead",callback_data='deposit_eth')], [InlineKeyboardButton("⬅️ Main",callback_data='back_main')]]), parse_mode='Markdown')
+        await send(f"🟣 **DEPOSIT SOLANA**\n\n💰 Balance: 0.00 SOL\n\nSolana Address:\n`{SOL_DEPOSIT}`\n\n**Min: 0.5 SOL**\nSend only SOL / USDT (Solana)\nTap to copy!"
 
     # FIXED MINIMUM 0.5 ETH
     elif data=='deposit_eth':
-        await send(f"🔵 **DEPOSIT ETHEREUM**\n\nETH Address:\n`{ETH_DEPOSIT}`\n\n**Min: 0.5 ETH**\nSend only ETH / ERC20\nTap to copy!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🟣 Deposit SOL instead",callback_data='deposit_sol')], [InlineKeyboardButton("⬅️ Main",callback_data='back_main')]]), parse_mode='Markdown')
+        await send(f"🔵 **DEPOSIT ETHEREUM**\n\nETH Address:\n`{ETH_DEPOSIT}`\n\n**Min: 0.5 ETH**\nSend only ETH / ERC20\nTap to copy!"
 
     elif data=='buy':
         waiting_for_buy.add(uid)
