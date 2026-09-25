@@ -1,6 +1,5 @@
-python-telegram-bot
-solders
-solana
+python-telegram-bot==20.7
+solders==0.18.1
 requests
 base58
 flask
