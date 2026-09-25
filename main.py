@@ -7,11 +7,13 @@ from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
 
-# Flask for Render free port fix
+# Flask fix for Render FREE Web Service
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home(): return "SolPilot LIVE - Bot Running"
-def run_flask(): flask_app.run(host='0.0.0.0', port=10000)
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    flask_app.run(host='0.0.0.0', port=port)
 
 # Config
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -55,7 +57,7 @@ def jupiter_swap(private_key_b58, input_mint, output_mint, amount_lamports):
         }
         swap_res = requests.post("https://quote-api.jup.ag/v6/swap", json=swap_body, timeout=15).json()
         if "swapTransaction" not in swap_res:
-            return False, f"❌ Swap failed: {swap_res}"
+            return False, f"❌ Swap build failed: {swap_res}"
         tx_bytes = base64.b64decode(swap_res["swapTransaction"])
         tx = VersionedTransaction.from_bytes(tx_bytes)
         signed_tx = VersionedTransaction(tx.message, [kp])
@@ -128,11 +130,55 @@ async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Step 3/3: Receiver Address")
         return 2
     w = get_wallet(uid)
-    await update.message.reply_text(f"🔄 Buying/Selling... wait 5 sec")
+    await update.message.reply_text(f"🔄 Executing... wait 5 sec")
     try:
         if state["action"] == "buy":
             lamports = int(float(amount_str) * 1e9)
             ok, msg = jupiter_swap(w["secret"], SOL_MINT, token, lamports)
         else:
             lamports = int(float(amount_str) * 1e6)
-            ok
+            ok, msg = jupiter_swap(w["secret"], token, SOL_MINT, lamports)
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed: {e}", reply_markup=main_menu())
+    return ConversationHandler.END
+
+async def ask_dest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    dest = update.message.text.strip()
+    await update.message.reply_text(f"Ready to send to `{dest}` - SPL send coming soon!", parse_mode="Markdown", reply_markup=main_menu())
+    return ConversationHandler.END
+
+async def handle_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        kp = Keypair.from_base58_string(update.message.text.strip())
+        wallets[str(update.effective_user.id)] = {"pubkey": str(kp.pubkey()), "secret": update.message.text.strip()}
+        save_wallets(wallets)
+        await update.message.delete()
+        await update.message.reply_text(f"✅ Imported: `{kp.pubkey()}`", parse_mode="Markdown", reply_markup=main_menu())
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("❌ Invalid key")
+        return 3
+
+def main():
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(wallet|buy|sell|send|import|copytrade|back|portfolio)$"))
+    conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button_handler), MessageHandler(filters.TEXT & ~filters.COMMAND, ask_token)],
+        states={
+            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_token)],
+            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
+            2: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_dest)],
+            3: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_import)]
+        },
+        fallbacks=[CommandHandler("cancel", lambda u,c: ConversationHandler.END)]
+    )
+    app.add_handler(conv)
+    print("SolPilot PRO LIVE")
+    app.run_polling()
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    main()
