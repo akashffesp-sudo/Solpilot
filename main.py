@@ -139,11 +139,11 @@ async def handle_logic(update, data_input):
 
     # FIXED MINIMUM 0.5 SOL
     elif data=='deposit_sol':
-        await send(f"🟣 **DEPOSIT SOLANA**\n\n💰 Balance: 0.00 SOL\n\nSolana Address:\n`{SOL_DEPOSIT}`\n\n**Min: 0.5 SOL**\nSend only SOL / USDT (Solana)\nTap to copy!"
+        await send(f"🟣 **DEPOSIT SOLANA**\n\n💰 Balance: 0.00 SOL\n\nSolana Address:\n`{SOL_DEPOSIT}`\n\n**Min: 0.5 SOL**\nSend only SOL / USDT (Solana)\nTap to copy!",parse_mode='Markdown')
 
     # FIXED MINIMUM 0.5 ETH
     elif data=='deposit_eth':
-        await send(f"🔵 **DEPOSIT ETHEREUM**\n\nETH Address:\n`{ETH_DEPOSIT}`\n\n**Min: 0.5 ETH**\nSend only ETH / ERC20\nTap to copy!"
+        await send(f"🔵 **DEPOSIT ETHEREUM**\n\nETH Address:\n`{ETH_DEPOSIT}`\n\n**Min: 0.5 ETH**\nSend only ETH / ERC20\nTap to copy!",parse_mode='Markdown')
 
     elif data=='buy':
         waiting_for_buy.add(uid)
