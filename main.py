@@ -1,181 +1,156 @@
 import os, json, base64, requests, base58, threading
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import *
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
-from solana.rpc.api import Client
-from solana.rpc.types import TxOpts
 
-# Flask fix for Render FREE Web Service
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "SolPilot LIVE - Bot Running"
+def home(): return "SolPilot LIVE"
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     flask_app.run(host='0.0.0.0', port=port)
 
-# Config
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+RPC = os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
 SOL_MINT = "So11111111111111111111111111111111111111112"
-RPC_URL = os.getenv("SOLANA_RPC", "https://api.mainnet-beta.solana.com")
-client = Client(RPC_URL)
 
-WALLETS_FILE = "wallets.json"
 wallets = {}
+WALLETS_FILE = "wallets.json"
+def load_w():
+    if os.path.exists(WALLETS_FILE):
+        try:
+            with open(WALLETS_FILE,"r") as f: return json.load(f)
+        except: return {}
+    return {}
+def save_w(d):
+    with open(WALLETS_FILE,"w") as f: json.dump(d,f)
+wallets = load_w()
 user_state = {}
 
-def load_wallets():
-    if os.path.exists(WALLETS_FILE):
-        with open(WALLETS_FILE, "r") as f: return json.load(f)
-    return {}
-def save_wallets(d):
-    with open(WALLETS_FILE, "w") as f: json.dump(d,f)
-wallets = load_wallets()
-
-def get_wallet(uid): return wallets.get(str(uid))
-
-def main_menu():
+def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 BUY", callback_data="buy"), InlineKeyboardButton("📤 SELL", callback_data="sell")],
-        [InlineKeyboardButton("💼 Wallet", callback_data="wallet"), InlineKeyboardButton("🔑 Import Wallet", callback_data="import")],
-        [InlineKeyboardButton("🚀 Send", callback_data="send"), InlineKeyboardButton("📊 Portfolio", callback_data="portfolio")],
-        [InlineKeyboardButton("⚡ Copy Trade", callback_data="copytrade")]
+        [InlineKeyboardButton("💼 Wallet", callback_data="wallet"), InlineKeyboardButton("🔑 Import", callback_data="import")],
+        [InlineKeyboardButton("🔙 Start", callback_data="start")]
     ])
 
-def jupiter_swap(private_key_b58, input_mint, output_mint, amount_lamports):
+def get_balance(pubkey):
     try:
-        kp = Keypair.from_base58_string(private_key_b58)
-        q_url = f"https://quote-api.jup.ag/v6/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount_lamports}&slippageBps=300"
-        quote = requests.get(q_url, timeout=15).json()
-        if "error" in quote or "routePlan" not in quote:
-            return False, f"❌ Quote failed: {quote.get('error', 'No route')}"
-        swap_body = {
-            "quoteResponse": quote,
-            "userPublicKey": str(kp.pubkey()),
-            "wrapAndUnwrapSol": True,
-            "dynamicComputeUnitLimit": True
-        }
-        swap_res = requests.post("https://quote-api.jup.ag/v6/swap", json=swap_body, timeout=15).json()
-        if "swapTransaction" not in swap_res:
-            return False, f"❌ Swap build failed: {swap_res}"
-        tx_bytes = base64.b64decode(swap_res["swapTransaction"])
-        tx = VersionedTransaction.from_bytes(tx_bytes)
-        signed_tx = VersionedTransaction(tx.message, [kp])
-        result = client.send_transaction(signed_tx, opts=TxOpts(skip_preflight=False))
-        sig = result.value if hasattr(result, 'value') else str(result)
-        return True, f"✅ Success!\nTx: https://solscan.io/tx/{sig}"
+        r = requests.post(RPC, json={"jsonrpc":"2.0","id":1,"method":"getBalance","params":[pubkey]}, timeout=10).json()
+        return f"{r['result']['value']/1e9:.4f}"
+    except: return "0"
+
+def jupiter_swap(pk_b58, in_mint, out_mint, amt):
+    try:
+        kp = Keypair.from_base58_string(pk_b58)
+        q = requests.get(f"https://quote-api.jup.ag/v6/quote?inputMint={in_mint}&outputMint={out_mint}&amount={amt}&slippageBps=300", timeout=15).json()
+        if "routePlan" not in q: return False, "❌ No route found"
+        body = {"quoteResponse": q, "userPublicKey": str(kp.pubkey()), "wrapAndUnwrapSol": True}
+        s = requests.post("https://quote-api.jup.ag/v6/swap", json=body, timeout=15).json()
+        if "swapTransaction" not in s: return False, "❌ Swap build fail"
+        tx = VersionedTransaction.from_bytes(base64.b64decode(s["swapTransaction"]))
+        signed = VersionedTransaction(tx.message, [kp])
+        b64tx = base64.b64encode(bytes(signed)).decode()
+        send = requests.post(RPC, json={"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":[b64tx, {"skipPreflight": False}]}, timeout=15).json()
+        sig = send.get("result", str(send))
+        return True, f"✅ Success!\nhttps://solscan.io/tx/{sig}"
     except Exception as e:
-        return False, f"❌ Error: {str(e)[:400]}"
+        return False, f"❌ {str(e)[:350]}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     if uid not in wallets:
         kp = Keypair()
         wallets[uid] = {"pubkey": str(kp.pubkey()), "secret": base58.b58encode(bytes(kp)).decode()}
-        save_wallets(wallets)
+        save_w(wallets)
     w = wallets[uid]
-    text = f"✈️ *SOLPILOT — Pro Bot*\n━━━━━━━━━━━━\n\n💼 Wallet:\n`{w['pubkey']}`\n\nSelect action 👇"
+    txt = f"✈️ *SOLPILOT Pro*\n\n💼 `{w['pubkey']}`\nBal: {get_balance(w['pubkey'])} SOL"
     if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu())
+        await update.message.reply_text(txt, parse_mode="Markdown", reply_markup=menu())
     else:
-        await update.callback_query.message.edit_text(text, parse_mode="Markdown", reply_markup=main_menu())
+        await update.callback_query.message.edit_text(txt, parse_mode="Markdown", reply_markup=menu())
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    uid = query.from_user.id
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    data = q.data
     if data == "wallet":
-        w = get_wallet(uid)
-        bal = "0.00"
-        try:
-            b = client.get_balance(w["pubkey"]) if w else None
-            if b: bal = f"{b.value/1e9:.4f}"
-        except: pass
-        await query.message.edit_text(f"💼 *WALLET*\n`{w['pubkey']}`\nBalance: {bal} SOL", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]]))
+        w = wallets[str(uid)]
+        await q.message.edit_text(f"💼 `{w['pubkey']}`\nBal: {get_balance(w['pubkey'])} SOL", parse_mode="Markdown", reply_markup=menu())
     elif data == "buy":
-        user_state[uid] = {"action":"buy"}
-        await query.message.edit_text("💰 *BUY*\nSend TOKEN ADDRESS", parse_mode="Markdown")
-        return 0
+        user_state[uid] = "buy_token"
+        await q.message.edit_text("💰 Send TOKEN ADDRESS to BUY")
     elif data == "sell":
-        user_state[uid] = {"action":"sell"}
-        await query.message.edit_text("📤 *SELL*\nSend TOKEN ADDRESS", parse_mode="Markdown")
-        return 0
-    elif data == "send":
-        user_state[uid] = {"action":"send"}
-        await query.message.edit_text("🚀 *SEND*\nStep 1/3: Token Address", parse_mode="Markdown")
-        return 0
+        user_state[uid] = "sell_token"
+        await q.message.edit_text("📤 Send TOKEN ADDRESS to SELL")
     elif data == "import":
-        await query.message.edit_text("🔑 Send Private Key", parse_mode="Markdown")
-        return 3
-    elif data == "copytrade":
-        w = get_wallet(uid)
-        await query.message.edit_text(f"⚡ *COPY TRADE*\nNeeds 100 USDT (~0.65 SOL)\nWallet: `{w['pubkey']}`\nDeposit and retry!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back")]]))
-    elif data == "back" or data == "portfolio":
+        user_state[uid] = "import"
+        await q.message.edit_text("🔑 Send Private Key (base58)")
+    else:
         await start(update, context)
 
-async def ask_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_state[uid]["token"] = update.message.text.strip()
-    await update.message.reply_text(f"Token: `{user_state[uid]['token']}`\nHow much? BUY: SOL amount (0.1) / SELL: token amount", parse_mode="Markdown")
-    return 1
+    txt = update.message.text.strip()
+    state = user_state.get(uid)
 
-async def ask_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    state = user_state.get(uid, {})
-    token = state["token"]
-    amount_str = update.message.text.strip()
-    if state["action"] == "send":
-        state["amount"] = amount_str
-        await update.message.reply_text("Step 3/3: Receiver Address")
-        return 2
-    w = get_wallet(uid)
-    await update.message.reply_text(f"🔄 Executing... wait 5 sec")
-    try:
-        if state["action"] == "buy":
-            lamports = int(float(amount_str) * 1e9)
-            ok, msg = jupiter_swap(w["secret"], SOL_MINT, token, lamports)
-        else:
-            lamports = int(float(amount_str) * 1e6)
-            ok, msg = jupiter_swap(w["secret"], token, SOL_MINT, lamports)
-        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=main_menu())
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed: {e}", reply_markup=main_menu())
-    return ConversationHandler.END
+    if state == "import":
+        try:
+            kp = Keypair.from_base58_string(txt)
+            wallets[str(uid)] = {"pubkey": str(kp.pubkey()), "secret": txt}
+            save_w(wallets)
+            user_state.pop(uid, None)
+            try: await update.message.delete()
+            except: pass
+            await update.message.reply_text(f"✅ Imported `{kp.pubkey()}`", parse_mode="Markdown", reply_markup=menu())
+        except:
+            await update.message.reply_text("❌ Invalid key")
+        return
 
-async def ask_dest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    dest = update.message.text.strip()
-    await update.message.reply_text(f"Ready to send to `{dest}` - SPL send coming soon!", parse_mode="Markdown", reply_markup=main_menu())
-    return ConversationHandler.END
+    if state == "buy_token":
+        user_state[uid] = f"buy_amt_{txt}"
+        await update.message.reply_text("Amount SOL? eg 0.1")
+        return
+    if state and str(state).startswith("buy_amt_"):
+        token = str(state).replace("buy_amt_","")
+        try:
+            lam = int(float(txt)*1e9)
+            w = wallets[str(uid)]
+            await update.message.reply_text("🔄 Swapping...")
+            ok, msg = jupiter_swap(w["secret"], SOL_MINT, token, lam)
+            await update.message.reply_text(msg, reply_markup=menu())
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}", reply_markup=menu())
+        user_state.pop(uid, None)
+        return
 
-async def handle_import(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        kp = Keypair.from_base58_string(update.message.text.strip())
-        wallets[str(update.effective_user.id)] = {"pubkey": str(kp.pubkey()), "secret": update.message.text.strip()}
-        save_wallets(wallets)
-        await update.message.delete()
-        await update.message.reply_text(f"✅ Imported: `{kp.pubkey()}`", parse_mode="Markdown", reply_markup=main_menu())
-        return ConversationHandler.END
-    except:
-        await update.message.reply_text("❌ Invalid key")
-        return 3
+    if state == "sell_token":
+        user_state[uid] = f"sell_amt_{txt}"
+        await update.message.reply_text("Amount tokens? eg 1000")
+        return
+    if state and str(state).startswith("sell_amt_"):
+        token = str(state).replace("sell_amt_","")
+        try:
+            lam = int(float(txt)*1e6)
+            w = wallets[str(uid)]
+            await update.message.reply_text("🔄 Swapping...")
+            ok, msg = jupiter_swap(w["secret"], token, SOL_MINT, lam)
+            await update.message.reply_text(msg, reply_markup=menu())
+        except Exception as e:
+            await update.message.reply_text(f"❌ {e}", reply_markup=menu())
+        user_state.pop(uid, None)
+        return
+
+    await start(update, context)
 
 def main():
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(wallet|buy|sell|send|import|copytrade|back|portfolio)$"))
-    conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler), MessageHandler(filters.TEXT & ~filters.COMMAND, ask_token)],
-        states={
-            0: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_token)],
-            1: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_amount)],
-            2: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_dest)],
-            3: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_import)]
-        },
-        fallbacks=[CommandHandler("cancel", lambda u,c: ConversationHandler.END)]
-    )
-    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     print("SolPilot PRO LIVE")
     app.run_polling()
 
